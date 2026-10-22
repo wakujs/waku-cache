@@ -25,7 +25,7 @@ describe('unstorageStore', () => {
       const store = unstorageStore(createStorage());
       await store.set(['a'], entry('1', { expiresAt: Date.now() + 1000 }));
       expect(await store.get(['a'])).not.toBeNull();
-      vi.advanceTimersByTime(1001);
+      vi.advanceTimersByTime(1000);
       expect(await store.get(['a'])).toBeNull();
     } finally {
       vi.useRealTimers();
@@ -43,5 +43,19 @@ describe('unstorageStore', () => {
     expect(await store.get(['product', 'abc'])).toBeNull();
     expect(await store.get(['product', 'abc', 'x'])).toBeNull();
     expect(await store.get(['production'])).not.toBeNull();
+  });
+
+  test('an empty prefix clears the cache without removing other storage keys', async () => {
+    const storage = createStorage();
+    const store = unstorageStore(storage);
+    await store.set(['a'], entry('1'));
+    await store.set(['b', 'c'], entry('2'));
+    await storage.setItem('unrelated:value', 'keep');
+
+    await store.delete([]);
+
+    expect(await store.get(['a'])).toBeNull();
+    expect(await store.get(['b', 'c'])).toBeNull();
+    expect(await storage.getItem('unrelated:value')).toBe('keep');
   });
 });

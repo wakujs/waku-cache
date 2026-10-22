@@ -25,7 +25,7 @@ describe('memoryStore', () => {
       const store = memoryStore();
       await store.set(['a'], entry('1', { expiresAt: Date.now() + 1000 }));
       expect(await store.get(['a'])).not.toBeNull();
-      vi.advanceTimersByTime(1001);
+      vi.advanceTimersByTime(1000);
       expect(await store.get(['a'])).toBeNull();
     } finally {
       vi.useRealTimers();

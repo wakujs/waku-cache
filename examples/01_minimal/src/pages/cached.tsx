@@ -1,16 +1,25 @@
+import { use } from 'react';
 import { Link } from 'waku';
+import { Counter } from '../components/counter.js';
 import { cache } from '../lib/cache.js';
 
-// Incremented only on an actual render. A cache hit replays the stored RSC
-// payload instead of rendering, so the number stays put until invalidation.
 let renderCount = 0;
+let nestedRenderCount = 0;
+const heading = Promise.resolve('Cached');
+
+const NestedContent = async () => (
+  <p data-testid="nested-content">nested render #{++nestedRenderCount}</p>
+);
 
 const CachedContent = () => {
+  const title = use(heading);
   ++renderCount;
   return (
     <div>
-      <h1>Cached</h1>
+      <h1>{title}</h1>
       <p data-testid="cached-content">cached render #{renderCount}</p>
+      <NestedContent />
+      <Counter />
       <p>
         <Link to="/" data-testid="to-home">
           Go home
@@ -29,9 +38,6 @@ export default Component;
 export const getConfig = () => {
   return {
     render: 'dynamic',
-    // Opt-in: the eager etag lets Waku skip re-sending this slot on navigation
-    // while it is unchanged. Drop this line and the server render cache still
-    // works; you just lose the on-the-wire skip.
     unstable_getEtag: getEtag,
   } as const;
 };

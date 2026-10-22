@@ -1,17 +1,21 @@
+import { deserialize, serialize } from 'node:v8';
+import { isValidElement } from 'react';
 import { createStorage } from 'unstorage';
 import { describe, expect, test, vi } from 'vitest';
 import { createCache } from 'waku-cache';
+import type { CacheKey } from 'waku-cache';
 import { memoryStore } from 'waku-cache/stores/memory';
 import { unstorageStore } from 'waku-cache/stores/unstorage';
 
-// cache.fn / cache.rsc serialize with Waku's serializeRsc, which needs the
-// react-server runtime. Stub it with a trivial JSON serializer so the caching
-// logic is testable here; the real serializer is exercised by the e2e.
 vi.mock('waku/server', () => ({
-  serializeRsc: (value: unknown) =>
-    Promise.resolve(new TextEncoder().encode(JSON.stringify(value) ?? 'null')),
-  deserializeRsc: (bytes: Uint8Array) =>
-    Promise.resolve(JSON.parse(new TextDecoder().decode(bytes))),
+  serializeRsc: async (value: unknown) => {
+    if (isValidElement(value) && typeof value.type === 'function') {
+      const Component = value.type as (props: unknown) => unknown;
+      value = await Component(value.props);
+    }
+    return serialize(value);
+  },
+  deserializeRsc: (bytes: Uint8Array) => Promise.resolve(deserialize(bytes)),
 }));
 
 const stores = [
@@ -64,18 +68,62 @@ describe.each(stores)('cache.fn (%s store)', (_name, makeStore) => {
 
   test('single-flight collapses concurrent misses', async () => {
     const cache = createCache({ store: makeStore() });
+    let release!: (value: string) => void;
+    let started!: () => void;
+    const pending = new Promise<string>((resolve) => {
+      release = resolve;
+    });
+    const called = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const compute = vi.fn(() => {
+      started();
+      return pending;
+    });
+    const get = cache.fn(compute, { key: () => ['k'] });
+    const results = Promise.all([get(), get()]);
+    await called;
+    release('value');
+    expect(await results).toEqual(['value', 'value']);
+    expect(compute).toHaveBeenCalledOnce();
+  });
+
+  test.each([null, undefined])('caches a %s result', async (value) => {
+    const cache = createCache({ store: makeStore() });
+    const compute = vi.fn(() => Promise.resolve(value));
+    const get = cache.fn(compute, { key: () => ['empty'] });
+
+    expect(await get()).toBe(value);
+    expect(await get()).toBe(value);
+    expect(compute).toHaveBeenCalledOnce();
+  });
+
+  test('a failed fill can be retried', async () => {
+    const cache = createCache({ store: makeStore() });
+    const compute = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(new Error('temporary failure'))
+      .mockResolvedValue('ready');
+    const get = cache.fn(compute, { key: () => ['retry'] });
+
+    await expect(get()).rejects.toThrow('temporary failure');
+    expect(await get()).toBe('ready');
+    expect(await get()).toBe('ready');
+    expect(compute).toHaveBeenCalledTimes(2);
+  });
+
+  test('keys preserve segment boundaries, types, and string shorthand', async () => {
+    const cache = createCache({ store: makeStore() });
     let calls = 0;
-    const get = cache.fn(
-      async () => {
-        calls++;
-        await new Promise((r) => setTimeout(r, 10));
-        return calls;
-      },
-      { key: () => ['k'] },
-    );
-    const [a, b] = await Promise.all([get(), get()]);
-    expect(calls).toBe(1);
-    expect(a).toBe(b);
+    const get = cache.fn((_key: CacheKey) => ++calls, { key: (key) => key });
+
+    expect(await get(['a:b', 'c'])).toBe(1);
+    expect(await get(['a', 'b:c'])).toBe(2);
+    expect(await get([1])).toBe(3);
+    expect(await get(['1'])).toBe(4);
+    expect(await get('a:b')).toBe(5);
+    expect(await get(['a:b'])).toBe(5);
+    expect(await get(['a:b', 'c'])).toBe(1);
   });
 
   test('TTL expiry recomputes', async () => {
@@ -90,18 +138,40 @@ describe.each(stores)('cache.fn (%s store)', (_name, makeStore) => {
       await get();
       await get();
       expect(spy).toHaveBeenCalledTimes(1);
-      vi.advanceTimersByTime(1001);
+      vi.advanceTimersByTime(1000);
       await get();
       expect(spy).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
     }
   });
+
+  test('a function TTL overrides the cache default', async () => {
+    vi.useFakeTimers();
+    try {
+      const cache = createCache({
+        store: makeStore(),
+        defaults: { ttl: 1000 },
+      });
+      const compute = vi.fn(() => Promise.resolve('value'));
+      const get = cache.fn(compute, { key: () => ['k'], ttl: 2000 });
+
+      await get();
+      vi.advanceTimersByTime(1000);
+      await get();
+      expect(compute).toHaveBeenCalledOnce();
+      vi.advanceTimersByTime(1000);
+      await get();
+      expect(compute).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
-describe('cache.rsc getEtag (content hash of the cached subtree)', () => {
+describe.each(stores)('cache.rsc (%s store)', (_name, makeStore) => {
   test('stable until content changes (invalidation re-renders new content)', async () => {
-    const cache = createCache({ store: memoryStore() });
+    const cache = createCache({ store: makeStore() });
     let n = 0;
     const { getEtag } = cache.rsc(() => `v${++n}`, { key: () => ['card'] });
     const e1 = await getEtag({}); // fills: content "v1"
@@ -111,10 +181,72 @@ describe('cache.rsc getEtag (content hash of the cached subtree)', () => {
   });
 
   test('re-rendering identical content keeps the same etag', async () => {
-    const cache = createCache({ store: memoryStore() });
+    const cache = createCache({ store: makeStore() });
     const { getEtag } = cache.rsc(() => 'same', { key: () => ['card'] });
     const e1 = await getEtag({});
     await cache.invalidate({ key: ['card'] });
     expect(await getEtag({})).toBe(e1); // identical bytes -> identical tag
+  });
+
+  test('a component and its etag share an in-flight render', async () => {
+    const cache = createCache({ store: makeStore() });
+    let release!: (value: string) => void;
+    let started!: () => void;
+    const pending = new Promise<string>((resolve) => {
+      release = resolve;
+    });
+    const called = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const render = vi.fn(() => {
+      started();
+      return pending;
+    });
+    const { Component, getEtag } = cache.rsc(render, { key: () => ['card'] });
+    const results = Promise.all([Component({}), getEtag({})]);
+    await called;
+    release('content');
+
+    const [content, etag] = await results;
+    expect(content).toBe('content');
+    expect(await getEtag({})).toBe(etag);
+    expect(await Component({})).toBe(content);
+    expect(render).toHaveBeenCalledOnce();
+  });
+
+  test('a failed etag render rejects and the component can retry', async () => {
+    const cache = createCache({ store: makeStore() });
+    const render = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(new Error('temporary render failure'))
+      .mockResolvedValue('ready');
+    const { Component, getEtag } = cache.rsc(render, { key: () => ['card'] });
+
+    await expect(getEtag({})).rejects.toThrow('temporary render failure');
+    expect(await Component({})).toBe('ready');
+    expect(await getEtag({})).toEqual(expect.any(String));
+    expect(render).toHaveBeenCalledTimes(2);
+  });
+
+  test('TTL expiry changes the etag and the component together', async () => {
+    vi.useFakeTimers();
+    try {
+      const cache = createCache({ store: makeStore() });
+      let calls = 0;
+      const { Component, getEtag } = cache.rsc(() => `content ${++calls}`, {
+        key: () => ['card'],
+        ttl: 1000,
+      });
+      const firstEtag = await getEtag({});
+      expect(await Component({})).toBe('content 1');
+
+      vi.advanceTimersByTime(1000);
+
+      expect(await getEtag({})).not.toBe(firstEtag);
+      expect(await Component({})).toBe('content 2');
+      expect(calls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

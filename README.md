@@ -10,7 +10,7 @@ The cache is explicit: nothing is cached unless you wrap it, you choose each ent
 npm install waku-cache
 ```
 
-`react` and `waku` are peer dependencies; the library itself has no runtime dependencies. The unstorage store additionally needs `unstorage` (an optional peer dependency); the memory store needs nothing.
+Requires Waku 1.0.0-rc.4 or later and its React peer dependencies (React 19.3.1 for rc.4). The library itself has no runtime dependencies. The unstorage store additionally needs `unstorage` (an optional peer dependency); the memory store needs nothing.
 
 ## Quick start
 
@@ -31,7 +31,7 @@ Then reach for one of two primitives.
 
 ## `cache.fn` — cache a function
 
-The common case. Wrap an async function; the call signature is unchanged, so it's a drop-in.
+Wrap a function; the cached wrapper accepts the same arguments and always returns a promise.
 
 ```ts
 import { cache } from './lib/cache.js';
@@ -87,11 +87,15 @@ export const getConfig = () => {
 };
 ```
 
-The etag is a **content hash of the cached subtree** — just a label for what the client currently holds. On each request the server compares it with the client's and decides whether to re-send the element or let the client reuse its cache. So it changes exactly when the content changes — on invalidation _and_ on TTL expiry — and stays stable while the entry is fresh. On a miss it's computed by rendering once (the same render the request needed anyway), so the tag always matches the element being sent.
+The etag is a **hash of the serialized subtree** — just a label for what the client currently holds. On each request the server compares it with the client's and decides whether to re-send the element or let the client reuse its cache. It stays stable while the entry is fresh. After invalidation or TTL expiry, it changes if the serialized bytes change. On a miss it's computed by rendering once (the same render the request needed anyway), so the tag matches the element being sent.
 
 ## Keys and invalidation
 
-Keys are arrays of parts, like TanStack Query (a bare string is shorthand for a one-part key). Invalidation matches by **prefix**, so one call can drop a whole subtree of keys — this is how you express grouped/cross-cutting invalidation without a separate "tags" concept:
+Keys are arrays of parts serialized with `JSON.stringify` (a bare string is shorthand for a one-part key).
+
+Keys share a namespace across every wrapper using the same store. Include every input that affects the result, including user-specific inputs, and use distinct keys for function results and RSC subtrees.
+
+Invalidation matches by **prefix**, so one call can drop a whole subtree of keys:
 
 ```ts
 const getProduct = cache.fn(load, { key: (id) => ['product', id] });
@@ -186,7 +190,7 @@ interface CacheEntry {
 
 ## Examples
 
-- `examples/01_minimal` — a Waku app caching RSC pages with `cache.rsc`, wiring the opt-in `getEtag` into `getConfig`, and invalidating through an `/invalidate` API route. The e2e (`e2e/01_minimal.spec.ts`) asserts the server render cache (a fresh client is served the stored payload), the etag wire-skip on navigation, the re-send after invalidation, and a TTL page where the element is skipped while fresh and re-sent after expiry.
+- `examples/01_minimal` — caches RSC pages, including nested Server Components and an interactive Client Component. It wires `getEtag` into `getConfig`, invalidates through `POST /invalidate`, and caches function results containing Flight-supported values at `GET /values`. `GET /retry` demonstrates recovery from a transient render failure.
 
 Run it:
 
@@ -195,7 +199,19 @@ pnpm compile
 pnpm examples:01_minimal
 ```
 
+## Testing
+
+```bash
+pnpm install
+pnpm test
+pnpm e2e
+E2E_MODE=production pnpm e2e
+```
+
+Unit tests cover both stores, concurrent fills, failure recovery, key encoding, and TTL boundaries. They use a serializer substitute at the Waku boundary. The e2e tests exercise Waku's real RSC serialization in development and production, including React's `use()` hook, hydration, render failure recovery, etag reuse, invalidation, TTL expiry, and non-JSON function results.
+
 ## Limitations
 
 - **Single-flight is per process.** Concurrent misses collapse within one Node process; across processes you may compute the same value more than once.
+- **Invalidation removes stored entries.** A fill already in progress may write its result afterward.
 - **Invalidation uses prefix matching, not a prefix index** — the same model as TanStack Query (partial key matching). `memoryStore` does an in-memory partial-match over its `Map` (local, like TanStack). `unstorageStore` maps keys to `:`-separated unstorage keys and uses the backend's native `getKeys(base)` (e.g. a Redis `SCAN MATCH`), so it lists only the matching subtree rather than every key — though on a huge keyspace a server-side `SCAN` is still not O(matches); a dedicated secondary index would be.

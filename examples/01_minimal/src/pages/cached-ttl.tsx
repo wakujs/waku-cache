@@ -1,9 +1,6 @@
 import { Link } from 'waku';
 import { cache } from '../lib/cache.js';
 
-// Same idea as /cached, but cached with a short TTL instead of relying on
-// invalidation. The etag tracks the entry's content, so it changes once the
-// entry expires and is re-rendered.
 let renderCount = 0;
 
 const CachedTtlContent = () => {
@@ -23,7 +20,7 @@ const CachedTtlContent = () => {
 
 const { Component, getEtag } = cache.rsc(CachedTtlContent, {
   key: () => ['cached-ttl-page'],
-  ttl: 1000,
+  ttl: 5000,
 });
 
 export default Component;
