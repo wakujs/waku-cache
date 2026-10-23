@@ -162,3 +162,19 @@ test('a failed RSC render can be retried without caching the error', async ({
   expect(thirdResponse.ok()).toBe(true);
   expect(await thirdResponse.json()).toEqual(recovered);
 });
+
+test('a nested RSC render failure is retried without caching the error', async ({
+  request,
+}) => {
+  const firstResponse = await request.get('/retry?nested');
+  expect(firstResponse.status()).toBe(503);
+
+  const secondResponse = await request.get('/retry?nested');
+  expect(secondResponse.ok()).toBe(true);
+  const recovered = await secondResponse.json();
+  expect(recovered).toEqual({ etag: expect.any(String), calls: 2 });
+
+  const thirdResponse = await request.get('/retry?nested');
+  expect(thirdResponse.ok()).toBe(true);
+  expect(await thirdResponse.json()).toEqual(recovered);
+});

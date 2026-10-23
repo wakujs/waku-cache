@@ -60,7 +60,11 @@ export interface Cache {
     fn: (...args: Args) => Result | Promise<Result>,
     options: FnOptions<Args>,
   ): (...args: Args) => Promise<Result>;
-  /** Wrap a Server Component so its serialized subtree is cached by key. */
+  /**
+   * Wrap a Server Component so its serialized subtree is cached by key.
+   * Render failures reject without storing an entry and can be retried.
+   * Server-side `useId()` is unsupported; pass explicit IDs in props and keys.
+   */
   rsc<Props extends Record<string, unknown> = Record<string, unknown>>(
     Component: (props: Props) => ReactNode | Promise<ReactNode>,
     options: RscOptions<Props>,
@@ -143,9 +147,22 @@ export function createCache(options: CreateCacheOptions): Cache {
         const existing = inflightRsc.get(id);
         if (existing) return existing;
         const pending = (async (): Promise<CacheEntry> => {
-          const { serializeRsc, deserializeRsc } = await getRscModule();
-          const bytes = await serializeRsc(createElement(Component, props));
-          await deserializeRsc(bytes);
+          const { renderToReadableStream } =
+            await import('react-server-dom-webpack/server.edge');
+          const errors: unknown[] = [];
+          const stream = renderToReadableStream(
+            createElement(Component, props),
+            {},
+            {
+              onError(error) {
+                errors.push(error);
+              },
+            },
+          );
+          const bytes = new Uint8Array(
+            await new Response(stream).arrayBuffer(),
+          );
+          if (errors.length) throw errors[0];
           const entry = makeEntry(bytes, opts.ttl);
           await store.set(segments, entry);
           return entry;

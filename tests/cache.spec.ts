@@ -8,14 +8,31 @@ import { memoryStore } from 'waku-cache/stores/memory';
 import { unstorageStore } from 'waku-cache/stores/unstorage';
 
 vi.mock('waku/server', () => ({
-  serializeRsc: async (value: unknown) => {
-    if (isValidElement(value) && typeof value.type === 'function') {
-      const Component = value.type as (props: unknown) => unknown;
-      value = await Component(value.props);
-    }
-    return serialize(value);
-  },
+  serializeRsc: (value: unknown) => Promise.resolve(serialize(value)),
   deserializeRsc: (bytes: Uint8Array) => Promise.resolve(deserialize(bytes)),
+}));
+
+vi.mock('react-server-dom-webpack/server.edge', () => ({
+  renderToReadableStream: (
+    element: unknown,
+    _webpackMap: unknown,
+    options: { onError: (error: unknown) => void },
+  ) =>
+    new ReadableStream({
+      async start(controller) {
+        let value: unknown;
+        try {
+          if (isValidElement(element) && typeof element.type === 'function') {
+            const Component = element.type as (props: unknown) => unknown;
+            value = await Component(element.props);
+          }
+        } catch (error) {
+          options.onError(error);
+        }
+        controller.enqueue(serialize(value));
+        controller.close();
+      },
+    }),
 }));
 
 const stores = [

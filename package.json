@@ -73,6 +73,7 @@
   },
   "peerDependencies": {
     "react": ">=19.0.0",
+    "react-server-dom-webpack": ">=19.0.0",
     "unstorage": ">=1.10.0",
     "waku": ">=1.0.0-rc.4"
   },
