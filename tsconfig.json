@@ -11,9 +11,9 @@
     "exactOptionalPropertyTypes": true,
     "jsx": "react-jsx",
     "paths": {
-      "waku-cache": ["./src/index"],
-      "waku-cache/stores/memory": ["./src/stores/memory"],
-      "waku-cache/stores/unstorage": ["./src/stores/unstorage"]
+      "waku-cache": ["./src/index.js"],
+      "waku-cache/stores/memory": ["./src/stores/memory.js"],
+      "waku-cache/stores/unstorage": ["./src/stores/unstorage.js"]
     },
     "declaration": true,
     "rootDir": "./src",
